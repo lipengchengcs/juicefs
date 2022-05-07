@@ -95,8 +95,8 @@ func newCacheStore(dir string, cacheSize int64, pendingPages int, config *Config
 	return c
 }
 
-func (c *cacheStore) usedMemory() int64 {
-	return atomic.LoadInt64(&c.totalPages)
+func (cache *cacheStore) usedMemory() int64 {
+	return atomic.LoadInt64(&cache.totalPages)
 }
 
 func (cache *cacheStore) stats() (int64, int64) {
@@ -320,14 +320,11 @@ func (cache *cacheStore) stage(key string, data []byte, keepCache bool) (string,
 	if err == nil {
 		stageBlocks.Add(1)
 		stageBlockBytes.Add(float64(len(data)))
-		if cache.capacity > 0 && keepCache {
-			path := cache.cachePath(key)
-			cache.createDir(filepath.Dir(path))
-			if err := os.Link(stagingPath, path); err == nil {
-				cache.add(key, -int32(len(data)), uint32(time.Now().Unix()))
-			} else {
-				logger.Warnf("link %s to %s failed: %s", stagingPath, path, err)
-			}
+		if keepCache {
+			blen := parseObjOrigSize(key)
+			block := NewOffPage(blen)
+			block.Data = data
+			cache.cache(key, block, true)
 		}
 	}
 	return stagingPath, err
@@ -543,6 +540,7 @@ func (cache *cacheStore) scanStaging() {
 
 type cacheManager struct {
 	stores []*cacheStore
+	stages []*cacheStore
 }
 
 func keyHash(s string) uint32 {
@@ -606,6 +604,7 @@ func newCacheManager(config *Config, uploader func(key, path string, force bool)
 		return newMemStore(config)
 	}
 	var dirs []string
+	var stageDirs []string
 	for _, d := range utils.SplitDir(config.CacheDir) {
 		dd := expandDir(d)
 		if config.AutoCreate {
@@ -618,26 +617,57 @@ func newCacheManager(config *Config, uploader func(key, path string, force bool)
 			}
 		}
 	}
+
+	for _, d := range utils.SplitDir(config.StageDir) {
+		dd := expandDir(d)
+		if config.AutoCreate {
+			dirs = append(dirs, dd...)
+		} else {
+			for _, d := range dd {
+				if fi, err := os.Stat(d); err == nil && fi.IsDir() {
+					stageDirs = append(dirs, d)
+				}
+			}
+		}
+	}
+
 	if len(dirs) == 0 {
 		logger.Warnf("No cache dir existed")
 		return newMemStore(config)
 	}
 	sort.Strings(dirs)
+	sort.Strings(stageDirs)
+
 	dirCacheSize := config.CacheSize << 20
 	dirCacheSize /= int64(len(dirs))
+
+	stageDirCacheSize := config.StageSize << 20
+	stageDirCacheSize /= int64(len(stageDirs))
+
 	m := &cacheManager{
 		stores: make([]*cacheStore, len(dirs)),
+		stages: make([]*cacheStore, len(stageDirs)),
 	}
 	// 20% of buffer could be used for pending pages
 	pendingPages := config.BufferSize * 2 / 10 / config.BlockSize / len(dirs)
+	stageDirPendingPages := config.BufferSize * 2 / 10 / config.BlockSize / len(stageDirs)
+
 	for i, d := range dirs {
 		m.stores[i] = newCacheStore(strings.TrimSpace(d)+string(filepath.Separator), dirCacheSize, pendingPages, config, uploader)
+	}
+
+	for i, d := range stageDirs {
+		m.stages[i] = newCacheStore(strings.TrimSpace(d)+string(filepath.Separator), stageDirCacheSize, stageDirPendingPages, config, uploader)
 	}
 	return m
 }
 
 func (m *cacheManager) getStore(key string) *cacheStore {
 	return m.stores[keyHash(key)%uint32(len(m.stores))]
+}
+
+func (m *cacheManager) getStage(key string) *cacheStore {
+	return m.stages[keyHash(key)%uint32(len(m.stages))]
 }
 
 func (m *cacheManager) usedMemory() int64 {
@@ -677,13 +707,13 @@ func (m *cacheManager) remove(key string) {
 }
 
 func (m *cacheManager) stage(key string, data []byte, keepCache bool) (string, error) {
-	return m.getStore(key).stage(key, data, keepCache)
+	return m.getStage(key).stage(key, data, keepCache)
 }
 
 func (m *cacheManager) stagePath(key string) string {
-	return m.getStore(key).stagePath(key)
+	return m.getStage(key).stagePath(key)
 }
 
 func (m *cacheManager) uploaded(key string, size int) {
-	m.getStore(key).uploaded(key, size)
+	m.getStage(key).uploaded(key, size)
 }

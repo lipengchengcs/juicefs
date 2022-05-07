@@ -309,6 +309,8 @@ func getChunkConf(c *cli.Context, format *meta.Format) *chunk.Config {
 		DownloadLimit: c.Int64("download-limit") * 1e6 / 8,
 
 		CacheDir:       c.String("cache-dir"),
+		StageDir:       c.String("stage-dir"),
+		StageSize:      int64(c.Int("stage-size")),
 		CacheSize:      int64(c.Int("cache-size")),
 		FreeSpace:      float32(c.Float64("free-space-ratio")),
 		CacheMode:      os.FileMode(0600),
@@ -322,6 +324,17 @@ func getChunkConf(c *cli.Context, format *meta.Format) *chunk.Config {
 			ds[i] = filepath.Join(ds[i], format.UUID)
 		}
 		chunkConf.CacheDir = strings.Join(ds, string(os.PathListSeparator))
+		if chunkConf.StageDir == "" {
+			chunkConf.StageDir = chunkConf.CacheDir
+			chunkConf.StageSize = chunkConf.CacheSize / 2
+			chunkConf.CacheSize = chunkConf.CacheSize / 2
+		} else {
+			ss := utils.SplitDir(chunkConf.StageDir)
+			for i := range ss {
+				ss[i] = filepath.Join(ss[i], format.UUID)
+			}
+			chunkConf.StageDir = strings.Join(ss, string(os.PathListSeparator))
+		}
 	}
 	return chunkConf
 }

@@ -583,8 +583,10 @@ func (c *wChunk) Abort() {
 // Config contains options for cachedStore
 type Config struct {
 	CacheDir       string
+	StageDir       string
 	CacheMode      os.FileMode
 	CacheSize      int64
+	StageSize      int64
 	FreeSpace      float32
 	AutoCreate     bool
 	Compress       string
